@@ -6,8 +6,8 @@ apps/maarch_entreprise/xml/log4php.xml
 test/unitTests/build/
 cypress/
 modules/visa/xml/remoteSignatoryBooks.xml
-/dist/
-/dist-addin/
+#/dist/
+#/dist-addin/
 node_modules/
 /custom/*
 /tmp/*
