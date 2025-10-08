@@ -1,0 +1,116 @@
+{
+    "config": {
+        "mercureLadDirectory": "/opt/MercureLAD"
+    },
+    "contactsIndexation": {
+        "id": {
+            "database": "id",
+            "lucene": "Idx",
+            "lexicon": null
+        },
+        "firstname": {
+            "database": "firstname",
+            "lucene": "Prenom",
+            "lexicon": "Prenom"
+        },
+        "lastname": {
+            "database": "lastname",
+            "lucene": "Nom",
+            "lexicon": "Nom"
+        },
+        "lastnamefirstname": {
+            "database": "firstname || ' ' || lastname AS lastnamefirstname",
+            "lucene": "NomPrenom",
+            "lexicon": "NomPrenom"
+        },
+        "address_street": {
+            "database": "address_street",
+            "lucene": "Rue",
+            "lexicon": "Rue"
+        },
+        "address_postcode": {
+            "database": "address_postcode",
+            "lucene": "Code",
+            "lexicon": "Code"
+        },
+        "address_town": {
+            "database": "address_town",
+            "lucene": "Ville",
+            "lexicon": "Ville"
+        },
+        "codetown": {
+            "database": "address_postcode || ' ' || address_town AS codetown",
+            "lucene": "CodeVille",
+            "lexicon": "CodeVille"
+        },
+        "email": {
+            "database": "email",
+            "lucene": "Email",
+            "lexicon": "Email"
+        },
+        "phone": {
+            "database": "phone",
+            "lucene": "Telephone",
+            "lexicon": null
+        },
+        "company": {
+            "database": "company",
+            "lucene": "Organisme",
+            "lexicon": "Organisme"
+        }
+    },
+    "mappingLadFields": {
+        "DateDoc" : {
+            "key": "documentDate",
+            "disabled": false,
+            "normalizationRule": "DATE",
+            "normalizationFormat": "Y-m-d"
+        },
+        "Date" : {
+            "disabled": true
+        },
+        "ObjetDoc" : {
+            "key": "subject",
+            "disabled": false
+        },
+        "Objet" : {
+            "disabled": true
+        },
+        "NRef" : {
+            "key": "subject",
+            "disabled": true
+        },
+        "NRefDoc" : {
+            "key": "subject",
+            "disabled": true
+        },
+        "CodeEtCommune": {
+            "disabled": true
+        },
+        "Code": {
+            "disabled": true
+        },
+        "SenderTelephone": {
+            "disabled": true
+        },
+        "SenderFax": {
+            "disabled": true
+        },
+        "Commune": {
+            "disabled": true
+        },
+        "Lieu": {
+            "disabled": true
+        },
+        "senders_contact" : {
+            "key": "contactIdx",
+            "disabled": false
+        },
+        "documentDate" : {
+            "disabled": false
+        },
+        "subject" : {
+            "disabled": false
+        }
+    }
+}

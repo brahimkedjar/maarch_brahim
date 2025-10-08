@@ -9,7 +9,7 @@ modules/visa/xml/remoteSignatoryBooks.xml
 #/dist/
 #/dist-addin/
 node_modules/
-/custom/*
+#/custom/*
 /tmp/*
 # vendor/ is not versioned on develop, but should be versioned in release branches
 vendor/
