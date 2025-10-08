@@ -1,0 +1,310 @@
+variables:
+  POSTGRES_DB: "MaarchCourrier"
+  POSTGRES_USER: maarch
+  POSTGRES_PASSWORD: ""
+
+stages:
+  - sync
+  - build
+  - test
+  - deploy
+  - after_deploy
+
+before_script:
+  - apt-get update -yqq > /dev/null
+  - mkdir -p /usr/share/man/man1
+  - mkdir -p /usr/share/man/man7
+  - apt-get install cron -yqq > /dev/null
+  - apt-get install git -yqq > /dev/null
+  - bash ci/docker_install_php.sh > /dev/null
+  - bash ci/docker_install_database.sh > /dev/null
+  - mkdir -p /opt/maarch/docservers/indexes/{letterbox_coll,attachments_coll,version_attachments_coll}
+  - mkdir -p /opt/maarch/docservers/{ai,resources,attachments,templates,acknowledgement_receipts}
+  - mkdir -p /opt/maarch/docservers/{convert_attachments,convert_resources}
+  - mkdir -p /opt/maarch/docservers/{fulltext_attachments,fulltext_resources}
+  - mkdir -p /opt/maarch/docservers/{thumbnails_attachments,thumbnails_resources,migration}
+  - mkdir -p /var/www/html/
+  - ln -s $CI_PROJECT_DIR /var/www/html/MaarchCourrier
+  - cd /var/www/html/MaarchCourrier
+  - sed 's/127.0.0.1/postgres/' config/config.json.default > config/config.json
+  - sed -i 's/\"lockAdvancedPrivileges\"\ \:\ true/\"lockAdvancedPrivileges\"\ \:\ false/' config/config.json
+  - cp modules/visa/xml/remoteSignatoryBooks.xml.default modules/visa/xml/remoteSignatoryBooks.xml
+  - apt-get install -yqq openjdk-11-jdk > /dev/null
+  - sed -i 's/rights="none" pattern="PDF"/rights="read | write" pattern="PDF"/' /etc/ImageMagick-6/policy.xml
+  - php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+  - php composer-setup.php
+  - php -r "unlink('composer-setup.php');"
+  - mv composer.phar /usr/local/bin/composer
+
+build:
+  image: docker:24.0.2
+  services:
+    - name: docker:24.0.2-dind
+      entrypoint: [ "env", "-u", "DOCKER_HOST" ]
+      command: [ "dockerd-entrypoint.sh" ]
+      alias: dockerhost
+  variables:
+    DOCKER_HOST: tcp://dockerhost:2375/
+    DOCKER_DRIVER: overlay2
+    # See https://github.com/docker-library/docker/pull/166
+    DOCKER_TLS_CERTDIR: ""
+    FF_DISABLE_UMASK_FOR_DOCKER_EXECUTOR: 'true'
+  stage: build
+  rules:
+#    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+#      variables:
+#        IMAGE_TAG: $CI_COMMIT_REF_SLUG
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $IMAGE_TAG == null'
+      variables:
+        IMAGE_TAG: $CI_COMMIT_REF_SLUG
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $IMAGE_TAG != null'
+    - if: $CI_COMMIT_TAG
+      variables:
+        IMAGE_TAG: $CI_COMMIT_TAG
+  before_script:
+    - echo "Docker build"
+    - apk update && apk add git
+    - git checkout-index --all --prefix umask-fix-checkout/
+    - cd umask-fix-checkout
+  script:
+    - docker info
+    - echo "$HARBOR_PASSWORD" | docker login -u $HARBOR_USERNAME --password-stdin $HARBOR_URL
+    - IMAGE_BASE_NAME=$HARBOR_HOST/$HARBOR_PROJECT/$CONTAINER_IMAGE_NAME
+    - echo $IMAGE_BASE_NAME
+    - IMAGE_NAME=$IMAGE_BASE_NAME:$IMAGE_TAG
+    - echo $IMAGE_NAME
+    - docker pull $IMAGE_NAME
+    - docker build --cache-from $IMAGE_NAME -t $IMAGE_NAME --target app --build-arg BUILDKIT_INLINE_CACHE=1 .
+    - docker push $IMAGE_NAME
+
+job_e2e:
+  image: php:8.1-apache
+  stage: test
+  services:
+    - name: postgres:10.1
+      command: [ "-c", "datestyle=iso,dmy" ]
+  script:
+    - composer install
+    - apt-get install -yqq libgtk2.0-0 libgtk-3-0 libgbm-dev libnotify-dev libgconf-2-4 libnss3 libxss1 libasound2 libxtst6 xauth xvfb
+    - service apache2 start
+    - touch installed.lck
+    - chown -R www-data. /opt/maarch/
+    - chown -R www-data. /var/www/html/
+    - chmod -R 775 /opt/maarch/
+    - chmod -R 775 /var/www/html/
+    - curl -sL https://deb.nodesource.com/setup_18.x > tmp.sh
+    # TEMPORARY FIX
+    - sed -i '350s/https/http/' tmp.sh
+    - sed -i '351s/https/http/' tmp.sh
+    #####
+    - chmod +x tmp.sh && ./tmp.sh && apt-get install -y nodejs
+    - apt-get install -yqq nodejs > /dev/null
+    - npm install npm@8.15.0 -g
+    - node -v
+    - npm -v
+    - npm set registry https://registry.npmjs.org/
+    - npm run reload-packages
+    - npm install > /dev/null
+    - npm run build-prod
+    - curl -o /dev/null --silent --head --write-out '%{http_code}\n' http://127.0.0.1/MaarchCourrier
+    - sed -i 's~https://preview.maarchcourrier.com~http://127.0.0.1/MaarchCourrier~' /var/www/html/MaarchCourrier/test/e2e/cypress-config.json
+    - npm run cypress:run
+  artifacts:
+    paths:
+      - queries_error.log
+      - test/e2e/output/
+    expire_in: 2 days
+    when: always
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $TAG_MODE == null'
+
+job_php-8.1:
+  image: php:8.1.19-apache
+  stage: test
+  services:
+    - name: postgres:10.1
+      command: [ "-c", "datestyle=iso,dmy" ]
+  script:
+    - pecl install pcov > /dev/null && docker-php-ext-enable pcov > /dev/null
+    - composer install
+    - curl --location -s --output /usr/local/bin/phpunit https://phar.phpunit.de/phpunit-9.phar
+    - chmod +x /usr/local/bin/phpunit
+    - vendor/bin/phpunit --colors=never --testsuite MaarchAcceptanceTest
+    - php -dpcov.enabled=1 -dpcov.directory=. vendor/bin/phpunit --coverage-text --colors=never --log-junit test/unitTests/build/phpunit.xml --coverage-cobertura=test/unitTests/build/coverage.cobertura.xml --testsuite MaarchTestSuite
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  coverage: '/^\s*Lines:\s*\d+.\d+\%/'
+  artifacts:
+    reports:
+      junit: test/unitTests/build/phpunit.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: test/unitTests/build/coverage.cobertura.xml
+    paths:
+      - test/unitTests/build/phpunit.xml
+    when: always
+    expire_in: 10 days
+
+phpcs:
+  stage: test
+  image: php:8.1-cli-alpine
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  before_script:
+    - php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+    - php composer-setup.php
+    - php -r "unlink('composer-setup.php');"
+    - mv composer.phar /usr/local/bin/composer
+  script:
+    - composer install --ignore-platform-reqs
+    - composer run phpcs -- --report=full --report-\\Micheh\\PhpCodeSniffer\\Report\\Gitlab=phpcs-quality-report.json
+  artifacts:
+    reports:
+      codequality: phpcs-quality-report.json
+
+phpcs-warnings:
+  stage: test
+  image: php:8.1-cli-alpine
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  before_script:
+    - php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+    - php composer-setup.php
+    - php -r "unlink('composer-setup.php');"
+    - mv composer.phar /usr/local/bin/composer
+  script:
+    - composer install --ignore-platform-reqs
+    - composer run phpcs-psr12:warnings -- --report=full --report-\\Micheh\\PhpCodeSniffer\\Report\\Gitlab=phpcs-warnings-report.json
+  allow_failure: true
+  artifacts:
+    reports:
+      codequality: phpcs-warnings-report.json
+
+phpstan:
+  stage: test
+  image: php:8.1-cli-alpine
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  before_script:
+    - php -r "copy('https://getcomposer.org/installer', 'composer-setup.php');"
+    - php composer-setup.php
+    - php -r "unlink('composer-setup.php');"
+    - mv composer.phar /usr/local/bin/composer
+  script:
+    - composer install --ignore-platform-reqs
+    - composer run phpstan -- --error-format=gitlab > report.json
+  allow_failure: true
+  artifacts:
+    reports:
+      codequality: report.json
+
+
+create_merge_request:
+  image: debian:10-slim
+  stage: sync
+  rules:
+    - if: '$CI_COMMIT_BRANCH =~ /(feat|fix)\/[0-9]*/ && $CI_OPEN_MERGE_REQUESTS == null && $CI_COMMIT_BEFORE_SHA == "0000000000000000000000000000000000000000"'
+  before_script:
+    - apt-get update -yqq > /dev/null
+    - apt install -y curl
+    - apt install -y jq
+  script:
+    - chmod +x ./ci/create_mr.sh
+    - ./ci/create_mr.sh
+
+end_merge_request:
+  image: debian:10-slim
+  stage: sync
+  rules:
+    - if: '$CI_COMMIT_MESSAGE =~ /^Merge branch/ && $CI_PIPELINE_SOURCE != "schedule" && ($CI_COMMIT_BRANCH == "main" || $CI_COMMIT_BRANCH == "2301_releases")'
+  before_script:
+    - apt-get update -yqq > /dev/null
+    - apt install -y curl
+    - apt install -y jq
+  script:
+    - chmod +x ./ci/end_mr.sh
+    - ./ci/end_mr.sh
+
+check_branch_releases:
+  image: debian:10-slim
+  stage: after_deploy
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $TAG_MODE == "minor"'
+  before_script:
+    - apt-get update -yqq > /dev/null
+    - apt install -y curl
+    - apt install -y jq
+    - apt install -y git
+  script:
+    - chmod +x ./ci/check_releases.sh
+    - ./ci/check_releases.sh
+
+create_minor_tag:
+  image: php:8.1.14-cli
+  stage: deploy
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $TAG_MODE == "minor"'
+  before_script:
+    - apt-get update -yqq > /dev/null
+    - apt install -y git
+    - apt install -y curl
+    - apt install -y jq
+    - chmod +x ./ci/generate_app_dependencies.sh
+    - ./ci/generate_app_dependencies.sh
+  script:
+    - chmod +x ./ci/new_minor_tag.sh
+    - ./ci/new_minor_tag.sh
+
+create_major_tag:
+  image: php:8.1.14-cli
+  stage: deploy
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "schedule" && $TAG_MODE == "major"'
+  before_script:
+    - apt-get update -yqq > /dev/null
+    - apt install -y git
+    - apt install -y curl
+    - apt install -y jq
+    - chmod +x ./ci/generate_app_dependencies.sh
+    - ./ci/generate_app_dependencies.sh
+  script:
+    - chmod +x ./ci/new_major_tag.sh
+    - ./ci/new_major_tag.sh
+
+test-karma:
+  stage: test
+  image: timbru31/node-chrome:20-slim
+  before_script:
+    - echo "Test karma"
+  script:
+    - npm i -g npm@10.1.0
+    - npm config set legacy-peer-deps true && npm ci
+    - npm run karma:test-ci
+  artifacts:
+    reports:
+      junit: coverage/maarch-courrier/junit-coverage.xml
+      coverage_report:
+        coverage_format: cobertura
+        path: coverage/maarch-courrier/cobertura-coverage.xml
+    paths:
+      - coverage/maarch-courrier/junit-coverage.xml
+    when: always
+    expire_in: 10 days
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+
+lint:
+  stage: test
+  image: node:20.9.0-slim
+  rules:
+    - if: '$CI_PIPELINE_SOURCE == "merge_request_event"'
+  before_script:
+    - echo "Check lint"
+  script:
+    - npm i -g npm@10.1.0
+    - npm i --legacy-peer-deps
+    - npm run lint
+  allow_failure: true
+  artifacts:
+    reports:
+      codequality: gl-codequality.json
